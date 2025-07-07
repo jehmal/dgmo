@@ -1,0 +1,12 @@
+BACKUP WARNING NOTIFICATION
+===========================
+
+Backup Status: WARNING
+Hostname: {HOSTNAME}
+Timestamp: {TIMESTAMP}
+Duration: {DURATION}
+
+Warning Details:
+{DETAILS}
+
+This is an automated message from the backup monitoring system.

@@ -1,0 +1,199 @@
+# Session Backup Log Rotation Configuration
+# File: session-backup.logrotate
+# Purpose: Rotate backup logs from cron jobs when they exceed 10MB
+# Author: DGMSTT System
+# Created: 2025-07-06
+
+# =============================================================================
+# INSTALLATION INSTRUCTIONS
+# =============================================================================
+# 1. Copy this file to /etc/logrotate.d/session-backup
+#    sudo cp session-backup.logrotate /etc/logrotate.d/session-backup
+#
+# 2. Set proper permissions:
+#    sudo chmod 644 /etc/logrotate.d/session-backup
+#    sudo chown root:root /etc/logrotate.d/session-backup
+#
+# 3. Test the configuration:
+#    sudo logrotate -d /etc/logrotate.d/session-backup
+#
+# 4. Force rotation for testing:
+#    sudo logrotate -f /etc/logrotate.d/session-backup
+#
+# 5. Verify logrotate service is enabled:
+#    sudo systemctl status logrotate.timer
+# =============================================================================
+
+# Main backup log files - adjust paths as needed for your system
+/var/log/dgmstt/session-backup.log
+/var/log/dgmstt/backup-*.log
+/var/log/dgmstt/cron-backup.log
+/tmp/session-backup-*.log
+{
+    # ROTATION TRIGGERS
+    # Rotate when file exceeds 10MB (10485760 bytes)
+    size 10M
+    
+    # RETENTION POLICY
+    # Keep 5 historical versions (current + 5 old = 6 total files)
+    rotate 5
+    
+    # COMPRESSION SETTINGS
+    # Compress rotated logs to save disk space
+    compress
+    # Don't compress the most recent rotated log (faster access)
+    delaycompress
+    # Use gzip compression (default, but explicit for clarity)
+    compresscmd /bin/gzip
+    uncompresscmd /bin/gunzip
+    compressext .gz
+    
+    # ERROR HANDLING
+    # Don't error if log files are missing (graceful handling)
+    missingok
+    # Don't rotate empty files
+    notifempty
+    # Continue processing other logs if one fails
+    sharedscripts
+    
+    # FILE MANAGEMENT
+    # Create new log file after rotation with proper permissions
+    create 640 root adm
+    # Copy original file and truncate (safer for active processes)
+    copytruncate
+    
+    # TIMING
+    # Check daily but only rotate when size threshold is met
+    daily
+    # Don't rotate if already rotated today
+    maxage 365
+    
+    # ADVANCED OPTIONS
+    # Use date as suffix for rotated files (YYYYMMDD format)
+    dateext
+    dateformat -%Y%m%d
+    # Don't use date extension for first rotation
+    nodateext
+    
+    # POST-ROTATION SCRIPTS
+    postrotate
+        # Ensure backup directory exists with proper permissions
+        if [ ! -d "/var/log/dgmstt" ]; then
+            mkdir -p /var/log/dgmstt
+            chmod 755 /var/log/dgmstt
+            chown root:adm /var/log/dgmstt
+        fi
+        
+        # Send signal to rsyslog to reopen log files (if using syslog)
+        if [ -f /var/run/rsyslogd.pid ]; then
+            /bin/kill -HUP $(cat /var/run/rsyslogd.pid) 2>/dev/null || true
+        fi
+        
+        # Optional: Send notification about log rotation
+        # echo "Session backup logs rotated at $(date)" | logger -t logrotate
+        
+        # Clean up any temporary backup files older than 7 days
+        find /tmp -name "session-backup-*.log.*" -type f -mtime +7 -delete 2>/dev/null || true
+        
+        # Verify log file permissions after rotation
+        for logfile in /var/log/dgmstt/session-backup.log /var/log/dgmstt/backup-*.log /var/log/dgmstt/cron-backup.log; do
+            if [ -f "$logfile" ]; then
+                chmod 640 "$logfile" 2>/dev/null || true
+                chown root:adm "$logfile" 2>/dev/null || true
+            fi
+        done
+    endscript
+    
+    # PREROTATION SCRIPTS (run before rotation)
+    prerotate
+        # Ensure we have write permissions to log directory
+        if [ ! -w "/var/log/dgmstt" ]; then
+            echo "Warning: No write permission to /var/log/dgmstt" >&2
+            exit 1
+        fi
+        
+        # Check available disk space (require at least 100MB free)
+        available_space=$(df /var/log | awk 'NR==2 {print $4}')
+        if [ "$available_space" -lt 102400 ]; then
+            echo "Warning: Low disk space in /var/log (less than 100MB available)" >&2
+            # Don't exit - let rotation proceed to free up space
+        fi
+        
+        # Create backup of current log before rotation (safety measure)
+        for logfile in /var/log/dgmstt/session-backup.log; do
+            if [ -f "$logfile" ] && [ -s "$logfile" ]; then
+                cp "$logfile" "${logfile}.pre-rotate.$(date +%Y%m%d-%H%M%S)" 2>/dev/null || true
+            fi
+        done
+    endscript
+}
+
+# Alternative configuration for high-frequency backup logs
+# Uncomment and modify if you have very active backup processes
+#/var/log/dgmstt/high-frequency-backup.log {
+#    size 5M
+#    rotate 10
+#    compress
+#    delaycompress
+#    missingok
+#    notifempty
+#    create 640 root adm
+#    copytruncate
+#    hourly
+#    maxage 30
+#}
+
+# =============================================================================
+# TROUBLESHOOTING GUIDE
+# =============================================================================
+# 
+# Common Issues and Solutions:
+#
+# 1. Permission Denied Errors:
+#    - Check file ownership: ls -la /etc/logrotate.d/session-backup
+#    - Verify log directory permissions: ls -la /var/log/dgmstt/
+#    - Run with sudo: sudo logrotate -f /etc/logrotate.d/session-backup
+#
+# 2. Logs Not Rotating:
+#    - Check logrotate status: sudo cat /var/lib/logrotate/status
+#    - Test configuration: sudo logrotate -d /etc/logrotate.d/session-backup
+#    - Check file sizes: ls -lh /var/log/dgmstt/
+#
+# 3. Missing Log Files:
+#    - Verify log paths in configuration match actual log locations
+#    - Check if backup processes are writing to expected locations
+#    - Use 'missingok' option (already enabled) to handle gracefully
+#
+# 4. Compression Issues:
+#    - Verify gzip is installed: which gzip
+#    - Check disk space for compression operations
+#    - Temporarily disable compression for testing
+#
+# 5. Script Errors:
+#    - Check script syntax: bash -n /etc/logrotate.d/session-backup
+#    - Review logrotate logs: sudo journalctl -u logrotate
+#    - Test scripts manually in postrotate/prerotate sections
+#
+# =============================================================================
+# MONITORING AND MAINTENANCE
+# =============================================================================
+#
+# Regular Checks:
+# 1. Monitor disk usage: df -h /var/log
+# 2. Check rotation status: sudo logrotate -d /etc/logrotate.d/session-backup
+# 3. Verify log file counts: ls -la /var/log/dgmstt/session-backup.log*
+# 4. Review logrotate service: sudo systemctl status logrotate.timer
+#
+# Performance Tuning:
+# - Adjust 'size' parameter based on backup frequency
+# - Modify 'rotate' count based on retention requirements
+# - Consider 'maxage' for automatic cleanup of very old logs
+# - Use 'compress' vs 'nocompress' based on disk space vs CPU trade-offs
+#
+# Security Considerations:
+# - Log files contain 640 permissions (owner read/write, group read)
+# - Root ownership prevents unauthorized access
+# - Regular cleanup prevents disk space attacks
+# - Proper directory permissions (755) allow service access
+#
+# =============================================================================

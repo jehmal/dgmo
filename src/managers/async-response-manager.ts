@@ -209,7 +209,7 @@ export class AsyncResponseManager extends EventEmitter<AsyncResponseEvents> {
    * Get tasks by state
    */
   getTasksByState(state: AsyncTaskState): AsyncTask[] {
-    return Array.from(this.tasks.values()).filter(task => task.state === state);
+    return Array.from(this.tasks.values()).filter((task) => task.state === state);
   }
 
   /**
@@ -239,73 +239,136 @@ export class AsyncResponseManager extends EventEmitter<AsyncResponseEvents> {
    */
   waitForTask(taskId: string, timeoutMs?: number): Promise<CommandResult> {
     return new Promise((resolve, reject) => {
-      const task = this.tasks.get(taskId);
+      const task = this.validateTaskExists(taskId);
       if (!task) {
         reject(new Error(`Task not found: ${taskId}`));
         return;
       }
 
-      // Check if already completed
-      if (task.state === AsyncTaskState.COMPLETED && task.result) {
-        resolve(task.result);
+      const immediateResult = this.checkImmediateTaskResult(task);
+      if (immediateResult.shouldReturn) {
+        if (immediateResult.isSuccess) {
+          resolve(immediateResult.result!);
+        } else {
+          reject(immediateResult.error!);
+        }
         return;
       }
 
-      if (task.state === AsyncTaskState.FAILED) {
-        reject(task.error || new Error('Task failed'));
-        return;
-      }
-
-      if (task.state === AsyncTaskState.CANCELLED) {
-        reject(new Error('Task cancelled'));
-        return;
-      }
-
-      // Set up timeout if specified
-      let timeoutHandle: NodeJS.Timeout | undefined;
-      if (timeoutMs) {
-        timeoutHandle = setTimeout(() => {
-          this.off('task.completed', completeHandler);
-          this.off('task.failed', failHandler);
-          this.off('task.cancelled', cancelHandler);
-          reject(new Error('Task timeout'));
-        }, timeoutMs);
-      }
-
-      // Set up event handlers
-      const completeHandler = (event: { task: AsyncTask; result: CommandResult }) => {
-        if (event.task.id === taskId) {
-          if (timeoutHandle) clearTimeout(timeoutHandle);
-          this.off('task.failed', failHandler);
-          this.off('task.cancelled', cancelHandler);
-          resolve(event.result);
-        }
-      };
-
-      const failHandler = (event: { task: AsyncTask; error: Error }) => {
-        if (event.task.id === taskId) {
-          if (timeoutHandle) clearTimeout(timeoutHandle);
-          this.off('task.completed', completeHandler);
-          this.off('task.cancelled', cancelHandler);
-          reject(event.error);
-        }
-      };
-
-      const cancelHandler = (event: { task: AsyncTask }) => {
-        if (event.task.id === taskId) {
-          if (timeoutHandle) clearTimeout(timeoutHandle);
-          this.off('task.completed', completeHandler);
-          this.off('task.failed', failHandler);
-          reject(new Error('Task cancelled'));
-        }
-      };
-
-      this.once('task.completed', completeHandler);
-      this.once('task.failed', failHandler);
-      this.once('task.cancelled', cancelHandler);
+      this.setupTaskWaiting(taskId, timeoutMs, resolve, reject);
     });
   }
 
+  private validateTaskExists(taskId: string): AsyncTask | null {
+    return this.tasks.get(taskId) || null;
+  }
+
+  private checkImmediateTaskResult(task: AsyncTask): {
+    shouldReturn: boolean;
+    isSuccess: boolean;
+    result?: CommandResult;
+    error?: Error;
+  } {
+    if (task.state === AsyncTaskState.COMPLETED && task.result) {
+      return { shouldReturn: true, isSuccess: true, result: task.result };
+    }
+
+    if (task.state === AsyncTaskState.FAILED) {
+      return {
+        shouldReturn: true,
+        isSuccess: false,
+        error: task.error || new Error('Task failed'),
+      };
+    }
+
+    if (task.state === AsyncTaskState.CANCELLED) {
+      return {
+        shouldReturn: true,
+        isSuccess: false,
+        error: new Error('Task cancelled'),
+      };
+    }
+
+    return { shouldReturn: false, isSuccess: false };
+  }
+
+  private setupTaskWaiting(
+    taskId: string,
+    timeoutMs: number | undefined,
+    resolve: (result: CommandResult) => void,
+    reject: (error: Error) => void,
+  ): void {
+    const cleanup = this.createEventCleanup();
+    const timeoutHandle = this.setupTimeout(timeoutMs, cleanup, reject);
+    const handlers = this.createEventHandlers(taskId, timeoutHandle, cleanup, resolve, reject);
+
+    this.registerEventHandlers(handlers);
+  }
+
+  private createEventCleanup() {
+    const handlers: Array<() => void> = [];
+    return {
+      add: (handler: () => void) => handlers.push(handler),
+      cleanup: () => handlers.forEach((h) => h()),
+    };
+  }
+
+  private setupTimeout(
+    timeoutMs: number | undefined,
+    cleanup: { cleanup: () => void },
+    reject: (error: Error) => void,
+  ): NodeJS.Timeout | undefined {
+    if (!timeoutMs) return undefined;
+
+    return setTimeout(() => {
+      cleanup.cleanup();
+      reject(new Error('Task timeout'));
+    }, timeoutMs);
+  }
+
+  private createEventHandlers(
+    taskId: string,
+    timeoutHandle: NodeJS.Timeout | undefined,
+    cleanup: { cleanup: () => void },
+    resolve: (result: CommandResult) => void,
+    reject: (error: Error) => void,
+  ) {
+    const completeHandler = (event: { task: AsyncTask; result: CommandResult }) => {
+      if (event.task.id === taskId) {
+        if (timeoutHandle) clearTimeout(timeoutHandle);
+        cleanup.cleanup();
+        resolve(event.result);
+      }
+    };
+
+    const failHandler = (event: { task: AsyncTask; error: Error }) => {
+      if (event.task.id === taskId) {
+        if (timeoutHandle) clearTimeout(timeoutHandle);
+        cleanup.cleanup();
+        reject(event.error);
+      }
+    };
+
+    const cancelHandler = (event: { task: AsyncTask }) => {
+      if (event.task.id === taskId) {
+        if (timeoutHandle) clearTimeout(timeoutHandle);
+        cleanup.cleanup();
+        reject(new Error('Task cancelled'));
+      }
+    };
+
+    return { completeHandler, failHandler, cancelHandler };
+  }
+
+  private registerEventHandlers(handlers: {
+    completeHandler: (event: { task: AsyncTask; result: CommandResult }) => void;
+    failHandler: (event: { task: AsyncTask; error: Error }) => void;
+    cancelHandler: (event: { task: AsyncTask }) => void;
+  }): void {
+    this.once('task.completed', handlers.completeHandler);
+    this.once('task.failed', handlers.failHandler);
+    this.once('task.cancelled', handlers.cancelHandler);
+  }
   /**
    * Clean up completed/failed/cancelled tasks
    */
@@ -313,11 +376,12 @@ export class AsyncResponseManager extends EventEmitter<AsyncResponseEvents> {
     // Keep task in memory for a while for status queries
     setTimeout(() => {
       const task = this.tasks.get(taskId);
-      if (task && (
-        task.state === AsyncTaskState.COMPLETED ||
-        task.state === AsyncTaskState.FAILED ||
-        task.state === AsyncTaskState.CANCELLED
-      )) {
+      if (
+        task &&
+        (task.state === AsyncTaskState.COMPLETED ||
+          task.state === AsyncTaskState.FAILED ||
+          task.state === AsyncTaskState.CANCELLED)
+      ) {
         this.tasks.delete(taskId);
         this.commandToTask.delete(task.commandId);
         this.cancellationTokens.delete(taskId);

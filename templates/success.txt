@@ -1,0 +1,13 @@
+BACKUP SUCCESS NOTIFICATION
+===========================
+
+Backup Status: SUCCESS
+Hostname: {HOSTNAME}
+Timestamp: {TIMESTAMP}
+Backup Size: {BACKUP_SIZE}
+Duration: {DURATION}
+
+Details:
+{DETAILS}
+
+This is an automated message from the backup monitoring system.

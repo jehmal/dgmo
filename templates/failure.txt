@@ -1,0 +1,19 @@
+BACKUP FAILURE NOTIFICATION
+===========================
+
+Backup Status: FAILURE
+Hostname: {HOSTNAME}
+Timestamp: {TIMESTAMP}
+Duration: {DURATION}
+
+Error Details:
+{DETAILS}
+
+Recommended Actions:
+- Check disk space on backup destination
+- Verify source directory accessibility
+- Review backup logs for detailed error information
+- Contact system administrator if problem persists
+
+This is an automated message from the backup monitoring system.
+IMMEDIATE ATTENTION REQUIRED!
