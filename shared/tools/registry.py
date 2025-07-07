@@ -1,30 +1,63 @@
 """
 Unified Tool Registry for cross-language tool management
+Supports both DGMO and DGM tools with seamless integration
 """
 
 import asyncio
-from typing import Dict, List, Optional, Any, Callable
+from typing import Dict, List, Optional, Any, Callable, Union
 from pathlib import Path
 import importlib.util
 import sys
+import json
+from datetime import datetime
 
 from ..types.python.tool import (
     Tool,
     ToolCategory,
     ToolFilter,
     ToolHandler,
-    Language
+    Language,
+    ToolContext,
+    ToolError
 )
+from ..types.python.base import Result, ErrorInfo, Metadata
 from .python_adapter import PythonTypeScriptAdapter, TypeScriptToolInfo, TypeScriptToolRegistration
+from .type_converter import TypeConverter
+
+
+# DGM Tool Interface (from Python)
+class DGMTool:
+    """DGM tool definition"""
+    def __init__(self, name: str, description: str, input_schema: Dict[str, Any], 
+                 output_schema: Optional[Dict[str, Any]] = None, 
+                 category: Optional[str] = None, tags: Optional[List[str]] = None):
+        self.name = name
+        self.description = description
+        self.input_schema = input_schema
+        self.output_schema = output_schema
+        self.category = category
+        self.tags = tags
+
+
+# DGMO Tool Interface (from TypeScript)
+class DGMOTool:
+    """DGMO tool definition"""
+    def __init__(self, id: str, description: str, parameters: Any, execute: Callable):
+        self.id = id
+        self.description = description
+        self.parameters = parameters
+        self.execute = execute
 
 
 class ToolRegistration:
     """Tool registration information"""
-    def __init__(self, tool: Tool, handler: ToolHandler, source: str = 'local', module: Optional[str] = None):
+    def __init__(self, tool: Tool, handler: ToolHandler, source: str = 'local', 
+                 module: Optional[str] = None, original_tool: Optional[Union[DGMOTool, DGMTool]] = None):
         self.tool = tool
         self.handler = handler
         self.source = source
         self.module = module
+        self.original_tool = original_tool
 
 
 class UnifiedToolRegistry:
@@ -56,15 +89,23 @@ class UnifiedToolRegistry:
         
         self._initialized = True
     
-    async def register(self, tool: Tool, handler: ToolHandler, module: Optional[str] = None) -> None:
-        """Register a tool"""
+    async def register(self, tool: Tool, handler: ToolHandler, module: Optional[str] = None, 
+                      original_tool: Optional[Union[DGMOTool, DGMTool]] = None) -> None:
+        """Register a tool with unified interface"""
         language_map = self.tools.get(tool.id, {})
+        
+        source = 'local'
+        if original_tool:
+            source = 'dgmo' if isinstance(original_tool, DGMOTool) else 'dgm'
+        elif module:
+            source = 'remote'
         
         language_map[tool.language] = ToolRegistration(
             tool=tool,
             handler=handler,
-            source='remote' if module else 'local',
-            module=module
+            source=source,
+            module=module,
+            original_tool=original_tool
         )
         
         self.tools[tool.id] = language_map
@@ -82,6 +123,129 @@ class UnifiedToolRegistry:
                     )
                 )
             )
+    
+    async def register_dgm_tool(self, tool_def: DGMTool, module: str) -> None:
+        """Register a DGM tool (from Python)"""
+        tool = Tool(
+            id=tool_def.name,
+            name=tool_def.name,
+            description=tool_def.description,
+            version='1.0.0',
+            category=ToolCategory(tool_def.category) if tool_def.category else self._infer_category(tool_def.name),
+            language=Language.PYTHON,
+            input_schema=tool_def.input_schema,
+            output_schema=tool_def.output_schema,
+            metadata={
+                'id': f'dgm-{tool_def.name}',
+                'version': '1.0.0',
+                'timestamp': datetime.now().isoformat(),
+                'source': 'dgm',
+                'tags': tool_def.tags
+            }
+        )
+        
+        async def handler(input_data: Any, context: ToolContext) -> Result:
+            try:
+                # Load and execute the Python tool
+                spec = importlib.util.spec_from_file_location("tool_module", module)
+                if not spec or not spec.loader:
+                    raise Exception(f"Failed to load module {module}")
+                
+                tool_module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(tool_module)
+                
+                # Execute the tool
+                if hasattr(tool_module, 'tool_function_async'):
+                    result = await tool_module.tool_function_async(input_data, context)
+                elif hasattr(tool_module, 'tool_function'):
+                    result = await asyncio.get_event_loop().run_in_executor(
+                        None, tool_module.tool_function, input_data
+                    )
+                else:
+                    raise Exception(f"No tool function found in {module}")
+                
+                return Result(
+                    success=True,
+                    data=result,
+                    metadata={
+                        'id': context.message_id,
+                        'version': '1.0.0',
+                        'timestamp': datetime.now().isoformat(),
+                        'source': 'dgm'
+                    }
+                )
+            except Exception as e:
+                return Result(
+                    success=False,
+                    error=ErrorInfo(
+                        code='DGM_TOOL_ERROR',
+                        message=str(e),
+                        recoverable=True,
+                        details={'tool': tool_def.name, 'error': str(e)}
+                    )
+                )
+        
+        await self.register(tool, handler, module, tool_def)
+    
+    async def register_dgmo_tool(self, tool_def: DGMOTool) -> None:
+        """Register a DGMO tool (from TypeScript)"""
+        tool = Tool(
+            id=tool_def.id,
+            name=tool_def.id,
+            description=tool_def.description,
+            version='1.0.0',
+            category=self._infer_category(tool_def.id),
+            language=Language.TYPESCRIPT,
+            input_schema=self._convert_dgmo_parameters_to_json_schema(tool_def.parameters),
+            metadata={
+                'id': f'dgmo-{tool_def.id}',
+                'version': '1.0.0',
+                'timestamp': datetime.now().isoformat(),
+                'source': 'dgmo'
+            }
+        )
+        
+        async def handler(input_data: Any, context: ToolContext) -> Result:
+            try:
+                # Convert Python input to TypeScript format
+                ts_input = TypeConverter.python_to_typescript(input_data)
+                
+                # Execute via TypeScript adapter
+                result = await PythonTypeScriptAdapter.execute_typescript_tool(
+                    tool_def.id,
+                    ts_input,
+                    {
+                        'sessionId': context.session_id,
+                        'messageId': context.message_id,
+                        'timeout': context.timeout
+                    }
+                )
+                
+                # Convert result back to Python
+                py_result = TypeConverter.typescript_to_python(result)
+                
+                return Result(
+                    success=True,
+                    data=py_result,
+                    metadata={
+                        'id': context.message_id,
+                        'version': '1.0.0',
+                        'timestamp': datetime.now().isoformat(),
+                        'source': 'dgmo'
+                    }
+                )
+            except Exception as e:
+                return Result(
+                    success=False,
+                    error=ErrorInfo(
+                        code='DGMO_TOOL_ERROR',
+                        message=str(e),
+                        recoverable=True,
+                        details={'tool': tool_def.id, 'error': str(e)}
+                    )
+                )
+        
+        await self.register(tool, handler, None, tool_def)
     
     async def unregister(self, tool_id: str, language: Optional[Language] = None) -> None:
         """Unregister a tool"""
@@ -158,6 +322,107 @@ class UnifiedToolRegistry:
         
         return tools
     
+    async def execute(self, tool_id: str, input_data: Any, context: ToolContext, 
+                     preferred_language: Optional[Language] = None) -> Result:
+        """Execute a tool with automatic language selection"""
+        language_map = self.tools.get(tool_id)
+        if not language_map:
+            return Result(
+                success=False,
+                error=ErrorInfo(
+                    code='TOOL_NOT_FOUND',
+                    message=f'Tool {tool_id} not found',
+                    recoverable=False
+                )
+            )
+        
+        # Try preferred language first
+        if preferred_language:
+            registration = language_map.get(preferred_language)
+            if registration:
+                return await registration.handler(input_data, context)
+        
+        # Fall back to first available
+        first_registration = next(iter(language_map.values()), None)
+        if first_registration:
+            return await first_registration.handler(input_data, context)
+        
+        return Result(
+            success=False,
+            error=ErrorInfo(
+                code='NO_HANDLER_FOUND',
+                message=f'No handler found for tool {tool_id}',
+                recoverable=False
+            )
+        )
+    
+    async def validate_input(self, tool_id: str, input_data: Any, 
+                           language: Optional[Language] = None) -> Result:
+        """Validate tool input against schema"""
+        tool = await self.get(tool_id, language)
+        if not tool:
+            return Result(
+                success=False,
+                error=ErrorInfo(
+                    code='TOOL_NOT_FOUND',
+                    message=f'Tool {tool_id} not found',
+                    recoverable=False
+                )
+            )
+        
+        try:
+            # Validate against JSON schema
+            valid, error = TypeConverter.validate_against_schema(input_data, tool.input_schema)
+            if not valid:
+                return Result(
+                    success=False,
+                    error=ErrorInfo(
+                        code='VALIDATION_ERROR',
+                        message=error or 'Input validation failed',
+                        recoverable=False,
+                        details={'input': input_data, 'schema': tool.input_schema}
+                    )
+                )
+            
+            return Result(success=True, data=input_data)
+        except Exception as e:
+            return Result(
+                success=False,
+                error=ErrorInfo(
+                    code='VALIDATION_ERROR',
+                    message=str(e),
+                    recoverable=False,
+                    details={'error': str(e)}
+                )
+            )
+    
+    async def discover(self) -> Dict[str, Any]:
+        """Get tool discovery information"""
+        stats = {
+            'total_tools': 0,
+            'by_language': {},
+            'by_category': {},
+            'by_source': {}
+        }
+        
+        for language_map in self.tools.values():
+            for language, registration in language_map.items():
+                stats['total_tools'] += 1
+                
+                # Count by language
+                lang_str = language.value
+                stats['by_language'][lang_str] = stats['by_language'].get(lang_str, 0) + 1
+                
+                # Count by category
+                category_str = registration.tool.category.value
+                stats['by_category'][category_str] = stats['by_category'].get(category_str, 0) + 1
+                
+                # Count by source
+                source = registration.source
+                stats['by_source'][source] = stats['by_source'].get(source, 0) + 1
+        
+        return stats
+    
     async def _load_built_in_tools(self) -> None:
         """Load built-in tools"""
         # Load Python tools from DGM
@@ -170,20 +435,21 @@ class UnifiedToolRegistry:
         """Load DGM tools"""
         try:
             tool_modules = [
-                Path(__file__).parent.parent.parent / 'dgm' / 'tools' / 'bash.py',
-                Path(__file__).parent.parent.parent / 'dgm' / 'tools' / 'edit.py'
+                {'path': Path(__file__).parent.parent.parent / 'dgm' / 'tools' / 'bash.py', 'name': 'bash'},
+                {'path': Path(__file__).parent.parent.parent / 'dgm' / 'tools' / 'edit.py', 'name': 'edit'}
             ]
             
-            for module_path in tool_modules:
+            for module_info in tool_modules:
+                module_path = module_info['path']
                 if module_path.exists():
                     try:
-                        await self._load_python_tool(str(module_path))
+                        await self._load_python_tool(str(module_path), module_info['name'])
                     except Exception as e:
                         print(f"Failed to load DGM tool from {module_path}: {e}")
         except Exception as e:
             print(f"Failed to load DGM tools: {e}")
     
-    async def _load_python_tool(self, module_path: str) -> None:
+    async def _load_python_tool(self, module_path: str, tool_name: str) -> None:
         """Load a Python tool module"""
         spec = importlib.util.spec_from_file_location("tool_module", module_path)
         if not spec or not spec.loader:
@@ -196,32 +462,17 @@ class UnifiedToolRegistry:
         if hasattr(module, 'tool_info'):
             info = module.tool_info()
             
-            # Create tool instance
-            tool = Tool(
-                id=info['name'],
-                name=info['name'],
-                description=info['description'],
-                version='1.0.0',
-                category=self._infer_category(info['name']),
-                language=Language.PYTHON,
-                input_schema=info['input_schema'],
-                metadata={'source': 'dgm'}
+            # Create DGM tool definition
+            dgm_tool = DGMTool(
+                name=tool_name,
+                description=info.get('description', ''),
+                input_schema=info.get('input_schema', {}),
+                output_schema=info.get('output_schema'),
+                category=info.get('category'),
+                tags=info.get('tags')
             )
             
-            # Create handler
-            if hasattr(module, 'tool_function_async'):
-                handler = module.tool_function_async
-            elif hasattr(module, 'tool_function'):
-                # Wrap sync function
-                sync_func = module.tool_function
-                async def handler(params, context):
-                    return await asyncio.get_event_loop().run_in_executor(
-                        None, sync_func, **params
-                    )
-            else:
-                return
-            
-            await self.register(tool, handler, module_path)
+            await self.register_dgm_tool(dgm_tool, module_path)
     
     async def _load_opencode_tools(self) -> None:
         """Load TypeScript tools from OpenCode"""
@@ -235,7 +486,18 @@ class UnifiedToolRegistry:
             
             for module_path in tool_modules:
                 try:
-                    await PythonTypeScriptAdapter.load_typescript_module(module_path)
+                    # Load TypeScript tool info via adapter
+                    tool_info = await PythonTypeScriptAdapter.load_typescript_module(module_path)
+                    if tool_info:
+                        # Create DGMO tool definition
+                        dgmo_tool = DGMOTool(
+                            id=tool_info.get('id', Path(module_path).stem),
+                            description=tool_info.get('description', ''),
+                            parameters=tool_info.get('parameters', {}),
+                            execute=None  # Will be handled by adapter
+                        )
+                        
+                        await self.register_dgmo_tool(dgmo_tool)
                 except Exception as e:
                     print(f"Failed to load OpenCode tool from {module_path}: {e}")
         except Exception as e:
@@ -256,6 +518,19 @@ class UnifiedToolRegistry:
         }
         
         return category_map.get(tool_id, ToolCategory.UTILITY)
+    
+    def _convert_dgmo_parameters_to_json_schema(self, parameters: Any) -> Dict[str, Any]:
+        """Convert DGMO parameters to JSON Schema"""
+        # If it's already a JSON schema, return it
+        if isinstance(parameters, dict) and 'type' in parameters:
+            return parameters
+        
+        # Default fallback
+        return {
+            'type': 'object',
+            'properties': {},
+            'additionalProperties': True
+        }
     
     def get_available_languages(self, tool_id: str) -> List[Language]:
         """Get available languages for a tool"""
@@ -297,3 +572,9 @@ async def list_tools(filter: Optional[ToolFilter] = None) -> List[Tool]:
 async def search_tools(query: str) -> List[Tool]:
     """Search for tools"""
     return await tool_registry.search(query)
+
+
+async def execute_tool(tool_id: str, input_data: Any, context: ToolContext, 
+                      preferred_language: Optional[Language] = None) -> Result:
+    """Execute a tool"""
+    return await tool_registry.execute(tool_id, input_data, context, preferred_language)

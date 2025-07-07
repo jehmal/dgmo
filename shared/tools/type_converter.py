@@ -295,3 +295,48 @@ class TypeConverter:
             return [TypeConverter.serialize_for_json(item) for item in value]
         else:
             return value
+    
+    @staticmethod
+    def dgm_to_dgmo_tool_params(dgm_params: Dict[str, Any]) -> Any:
+        """Convert DGM tool parameters (JSON Schema) to DGMO format"""
+        # DGM uses JSON schemas, DGMO expects different format
+        # This is a simplified conversion - in production, use proper converter
+        return dgm_params
+    
+    @staticmethod
+    def dgmo_to_dgm_tool_params(dgmo_params: Any) -> Dict[str, Any]:
+        """Convert DGMO tool parameters to DGM format (JSON Schema)"""
+        # DGMO might use Zod or other schema formats
+        # Convert to JSON Schema for DGM
+        if isinstance(dgmo_params, dict) and 'type' in dgmo_params:
+            return dgmo_params  # Already JSON Schema
+        
+        # Default conversion
+        return {
+            'type': 'object',
+            'properties': {},
+            'additionalProperties': True
+        }
+    
+    @staticmethod
+    def dgm_to_dgmo_result(result: Any) -> Dict[str, Any]:
+        """Convert DGM tool result to DGMO format"""
+        if isinstance(result, str):
+            return {
+                'output': result,
+                'metadata': {}
+            }
+        
+        return {
+            'output': result.get('output', str(result)),
+            'metadata': result.get('metadata', {})
+        }
+    
+    @staticmethod
+    def dgmo_to_dgm_result(result: Dict[str, Any]) -> Any:
+        """Convert DGMO tool result to DGM format"""
+        return {
+            'output': result.get('output', ''),
+            'metadata': result.get('metadata', {}),
+            'success': True
+        }
