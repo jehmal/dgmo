@@ -45,7 +45,7 @@ await App.provide({ cwd: "/mnt/c/Users/jehma/Desktop/AI/DGMSTT/opencode" }, asyn
     // This mimics what Provider.tools() should do
     const taskModule = await import("./opencode/packages/opencode/src/tool/task")
     if (taskModule.TaskTool) {
-      console.log("  ✓ TaskTool module loaded successfully!")
+      console.log("  ✓ TaskTool module loaded successfuly!")
       console.log("  ID:", taskModule.TaskTool.id)
       console.log("  Parameters:", Object.keys(taskModule.TaskTool.parameters.shape))
     } else {

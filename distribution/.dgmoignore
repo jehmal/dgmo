@@ -1,0 +1,123 @@
+# DGMO Distribution Ignore File
+# This file specifies what to exclude from consumer distribution
+
+# Development and test files
+**/*test*
+**/*spec*
+**/*example*
+**/*demo*
+**/*mock*
+**/fixtures/
+**/samples/
+**/__tests__/
+**/tests/
+
+# Documentation (except essential)
+**/docs/
+**/*.md
+!README.md
+!LICENSE
+
+# Development tools and configs
+**/.vscode/
+**/.idea/
+**/node_modules/
+**/.git/
+**/.github/
+**/coverage/
+**/.nyc_output/
+**/dist/
+**/build/
+**/*.log
+**/.DS_Store
+
+# Old binaries and builds
+**/dgmo-*
+**/opencode-tui
+**/tui
+**/*.exe
+!**/cmd/dgmo/main.go
+
+# Development scripts
+**/scripts/
+**/debug-*
+**/test-*
+**/fix-*
+**/check-*
+
+# Temporary and cache files
+**/tmp/
+**/temp/
+**/.cache/
+**/*.tmp
+**/*.bak
+**/*.swp
+
+# Python development
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/.venv/
+**/.env
+**/poetry.lock
+!requirements.txt
+
+# TypeScript development
+**/tsconfig.tsbuildinfo
+**/*.map
+**/*.d.ts.map
+
+# Go development
+**/vendor/
+**/*.test
+**/*.out
+
+# Archives and packages
+**/*.tar.gz
+**/*.zip
+**/*.dmg
+**/*.deb
+**/*.rpm
+
+# Large assets
+**/videos/
+**/images/
+**/*.mp4
+**/*.png
+**/*.jpg
+!**/icon.png
+
+# Non-essential packages
+opencode/packages/web/
+opencode/packages/function/
+archived-*
+bubbletea/
+visual-mode-examples/
+atlassian-rovo-source-code-z80-dump/
+
+# Development environment files
+.env*
+!.env.example
+docker-compose*.yml
+Dockerfile*
+Makefile
+jest.config.js
+.prettierrc
+.editorconfig
+.gitignore
+.dockerignore
+
+# Monorepo extras
+lerna.json
+nx.json
+rush.json
+pnpm-workspace.yaml
+yarn.lock
+package-lock.json
+bun.lockb
+
+# Keep only essential configs
+!package.json
+!tsconfig.json
+!go.mod
+!go.sum

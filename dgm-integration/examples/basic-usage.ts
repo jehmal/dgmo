@@ -25,7 +25,7 @@ async function main() {
     // Start the bridge
     console.log('Initializing DGM bridge...');
     await bridge.initialize();
-    console.log('Bridge initialized successfully');
+    console.log('Bridge initialized successfuly');
 
     // Track some tool executions
     console.log('\nTracking tool executions...');

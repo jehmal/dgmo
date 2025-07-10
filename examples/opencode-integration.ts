@@ -339,7 +339,7 @@ async function handleDockerCommand(command: any, action: string, params: any): P
       tool: 'docker',
       action,
       params,
-      output: `Docker ${action} executed successfully`,
+      output: `Docker ${action} executed successfuly`,
     },
     executionTime: 500,
     timestamp: new Date(),

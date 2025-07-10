@@ -1,0 +1,1 @@
+Use the Task tool to create a sub-agent that says "Hello from sub-agent". The task description should be "Test sub-agent" and the prompt should be "Say hello from sub-agent"
